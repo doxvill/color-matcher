@@ -290,6 +290,65 @@ def find_closest_ral(hex_color: str, ral_dict: Dict[str, str] = None) -> Tuple[s
     
     return closest_ral, closest_hex
 
+def get_available_model(api_key: str) -> str:
+    """
+    Получает доступную модель Gemini.
+    
+    Args:
+        api_key: API ключ для Google Gemini
+    
+    Returns:
+        Название доступной модели
+    """
+    try:
+        genai.configure(api_key=api_key)
+        # Список моделей для попытки (от новых к старым)
+        model_names = [
+            'gemini-1.5-flash-latest',  # Наиболее вероятно доступная модель
+            'gemini-1.5-flash',
+            'gemini-1.5-pro',
+            'gemini-pro-vision',
+            'gemini-pro'
+        ]
+        
+        # Получаем список доступных моделей
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Ищем первую доступную модель из нашего списка
+        for model_name in model_names:
+            # Проверяем разные варианты названий
+            for available in available_models:
+                # Модели могут быть в формате "models/gemini-1.5-flash-latest"
+                model_short = model_name
+                if '/' in available:
+                    available_short = available.split('/')[-1]
+                else:
+                    available_short = available
+                
+                if model_short == available_short or model_short in available_short:
+                    return model_short
+        
+        # Если ничего не найдено, возвращаем первую доступную модель с 'flash' в названии
+        for available in available_models:
+            if 'flash' in available.lower():
+                if '/' in available:
+                    return available.split('/')[-1]
+                return available
+        
+        # Если и это не сработало, возвращаем первую доступную
+        if available_models:
+            model = available_models[0]
+            if '/' in model:
+                return model.split('/')[-1]
+            return model
+        
+        # По умолчанию пробуем gemini-1.5-flash-latest
+        return 'gemini-1.5-flash-latest'
+        
+    except Exception as e:
+        # В случае ошибки возвращаем модель по умолчанию
+        return 'gemini-1.5-flash-latest'
+
 def analyze_colors_with_gemini(image: Image.Image, api_key: str) -> List[str]:
     """
     Анализирует изображение с помощью Gemini API и извлекает 5 доминирующих цветов.
@@ -303,7 +362,27 @@ def analyze_colors_with_gemini(image: Image.Image, api_key: str) -> List[str]:
     """
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # Получаем доступную модель
+        model_name = get_available_model(api_key)
+        
+        # Пробуем использовать модель
+        try:
+            model = genai.GenerativeModel(model_name)
+        except Exception as model_error:
+            # Если модель не найдена, пробуем альтернативные варианты
+            alternative_models = ['gemini-1.5-flash-latest', 'gemini-1.5-pro', 'gemini-pro-vision']
+            model = None
+            for alt_model in alternative_models:
+                try:
+                    model = genai.GenerativeModel(alt_model)
+                    model_name = alt_model
+                    break
+                except:
+                    continue
+            
+            if model is None:
+                raise Exception(f"Не удалось найти доступную модель. Ошибка: {model_error}")
         
         prompt = """Проанализируй это изображение интерьера и найди 5 доминирующих цветов.
         Верни результат ТОЛЬКО в формате JSON массива, без дополнительного текста:
@@ -358,6 +437,9 @@ def analyze_colors_with_gemini(image: Image.Image, api_key: str) -> List[str]:
         error_msg = str(e)
         if "API_KEY" in error_msg or "api_key" in error_msg.lower():
             st.error("Неверный API ключ. Проверьте правильность ключа.")
+        elif "404" in error_msg or "not found" in error_msg.lower():
+            st.error("Модель не найдена. Попробуйте обновить библиотеку: pip install --upgrade google-generativeai")
+            st.info("Проверьте доступные модели в консоли Google AI Studio")
         elif "quota" in error_msg.lower() or "limit" in error_msg.lower():
             st.error("Превышен лимит запросов к API. Попробуйте позже.")
         else:
@@ -488,6 +570,10 @@ def main():
             st.warning("⚠️ Пожалуйста, введите API ключ для продолжения")
             st.info("Получить API ключ можно на: https://makersuite.google.com/app/apikey")
             return
+        
+        st.divider()
+        st.caption("💡 Совет: Если возникают ошибки с моделями, обновите библиотеку:")
+        st.code("pip install --upgrade google-generativeai", language="bash")
     
     # Загрузка изображения
     uploaded_file = st.file_uploader(
@@ -512,6 +598,14 @@ def main():
                 if not api_key or api_key.strip() == "":
                     st.error("⚠️ Пожалуйста, введите API ключ в боковой панели")
                 else:
+                    # Определяем модель заранее для отображения
+                    try:
+                        genai.configure(api_key=api_key)
+                        model_name = get_available_model(api_key)
+                        st.info(f"Используется модель: {model_name}")
+                    except:
+                        pass
+                    
                     with st.spinner("Анализирую изображение с помощью Gemini AI... Это может занять несколько секунд."):
                         hex_colors = analyze_colors_with_gemini(image, api_key)
                         
